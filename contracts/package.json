@@ -1,0 +1,15 @@
+{
+  "name": "dazi-contracts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "compile": "node scripts/compile.mjs",
+    "deploy": "node scripts/compile.mjs && node scripts/deploy.mjs",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "dotenv": "17.2.3",
+    "solc": "0.8.28",
+    "viem": "2.40.0"
+  }
+}
