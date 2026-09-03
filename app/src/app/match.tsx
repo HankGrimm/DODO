@@ -1,6 +1,5 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { parseEther } from 'viem';
 
 import { ThemedText } from '@/components/themed-text';
 import { Button, Card, Notice, Row, Screen } from '@/components/ui-kit';
@@ -8,8 +7,7 @@ import { SCENES } from '@/lib/chain';
 import { matchCandidates, type MatchResult } from '@/lib/ai';
 import { CANDIDATES } from '@/lib/candidates';
 import { displayScore } from '@/lib/credit';
-import { createTeam, fundPartnerIfNeeded, makeCode, partnerJoin, readTeam } from '@/lib/escrow';
-import { useStore } from '@/lib/store';
+import { useStore, inviteLive } from '@/lib/store';
 
 export default function MatchScreen() {
   const params = useLocalSearchParams<{
@@ -20,13 +18,13 @@ export default function MatchScreen() {
     depositEth: string;
     genderPref: 'any' | 'same';
   }>();
-  const { profile, addTeam, refresh } = useStore();
+  const { profile, invites, addInvite, blockedIds } = useStore();
   const [result, setResult] = useState<MatchResult>();
-  const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
 
   const scene = Number(params.scene ?? 0);
   const depositEth = params.depositEth ?? '0.001';
+  const blockedKey = blockedIds.join(',');
 
   useEffect(() => {
     matchCandidates(
@@ -39,49 +37,33 @@ export default function MatchScreen() {
         myGender: profile?.gender ?? 'female',
       },
       CANDIDATES,
+      blockedKey ? blockedKey.split(',') : [],
     ).then(setResult);
-  }, [scene, params.place, params.note, params.offsetMin, params.genderPref, profile?.gender]);
+  }, [scene, params.place, params.note, params.offsetMin, params.genderPref, profile?.gender, blockedKey]);
 
-  async function team(nickname: string) {
+  // 只发邀请，不动链。押金要等对方接受之后在邀请详情页缴。
+  async function invite(candidateId: string, nickname: string, reason: string) {
     setError('');
     try {
-      const myCode = makeCode();
-      const partnerCode = makeCode();
-      const meetAt = Math.floor(Date.now() / 1000) + Number(params.offsetMin ?? 120) * 60;
-
-      setBusy('创建组队并托管押金…');
-      const { teamId } = await createTeam({
-        scene,
-        meetAt,
-        checkinDeadline: meetAt + 3600,
-        code: myCode,
-        depositEth,
-      });
-
-      setBusy('等待搭子缴纳押金…');
-      await fundPartnerIfNeeded(parseEther(depositEth));
-      const onChain = await readTeam(teamId);
-      await partnerJoin(teamId, partnerCode, onChain.deposit);
-
-      await addTeam({
-        teamId: teamId.toString(),
+      const id = `${candidateId}-${Date.now()}`;
+      await addInvite({
+        id,
+        candidateId,
+        nickname,
+        reason,
         scene,
         place: params.place ?? '',
-        meetAt: new Date(meetAt * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+        meetAtSec: Math.floor(Date.now() / 1000) + Number(params.offsetMin ?? 120) * 60,
         depositEth,
-        myCode,
-        partnerCode,
-        partnerNickname: nickname,
+        status: 'pending',
         createdAt: Date.now(),
       });
-      await refresh();
-      router.replace({ pathname: '/team', params: { id: teamId.toString() } });
+      router.replace({ pathname: '/invite', params: { id } });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy('');
     }
   }
+
   // MORE_BELOW
   return (
     <Screen>
@@ -95,29 +77,36 @@ export default function MatchScreen() {
       {result?.ranked.length === 0 && (
         <Card title="暂无匹配">
           <ThemedText type="small" themeColor="textSecondary">
-            没有符合硬性条件（已实名 / 场景匹配 / 性别偏好 / 10 公里内）的候选人，不做凑数推荐。
+            没有符合硬性条件（已实名 / 场景匹配 / 性别偏好 / 10 公里内 / 未被你拉黑）的候选人，不做凑数推荐。
           </ThemedText>
           <Button title="改条件重发" variant="secondary" onPress={() => router.back()} />
         </Card>
       )}
 
-      {result?.ranked.map(({ candidate: c, reason }) => (
-        <Card key={c.id} title={`${c.nickname}${c.verified ? ' · 已实名' : ''}`}>
-          <Row label="信用分" value={displayScore(c)} />
-          <Row label="履约记录" value={`守约 ${c.kept} 次 / 失约 ${c.missed} 次`} />
-          <Row label="距离" value={`${c.distanceKm} 公里`} />
-          <Row label="活动时间窗" value={c.timeWindow} />
-          <Row label="标签" value={c.tags.join(' · ')} />
-          <ThemedText type="small" themeColor="textSecondary">
-            撮合依据：{reason}
-          </ThemedText>
-          <Button
-            title={busy ? busy : `与 ${c.nickname} 组队并缴押金`}
-            disabled={busy.length > 0}
-            onPress={() => void team(c.nickname)}
-          />
-        </Card>
-      ))}
+      {result?.ranked.map(({ candidate: c, reason }) => {
+        const sent = invites.find((i) => i.candidateId === c.id && inviteLive(i, blockedIds));
+        return (
+          <Card key={c.id} title={`${c.nickname}${c.verified ? ' · 已实名' : ''}`}>
+            <Row label="信用分" value={displayScore(c)} />
+            <Row label="履约记录" value={`守约 ${c.kept} 次 / 失约 ${c.missed} 次`} />
+            <Row label="距离" value={`${c.distanceKm} 公里`} />
+            <Row label="活动时间窗" value={c.timeWindow} />
+            <Row label="标签" value={c.tags.join(' · ')} />
+            <ThemedText type="small" themeColor="textSecondary">
+              撮合依据：{reason}
+            </ThemedText>
+            <Button
+              title={sent ? '已发出邀请，查看进度' : `向 ${c.nickname} 发出邀请`}
+              variant={sent ? 'secondary' : 'primary'}
+              onPress={() =>
+                sent
+                  ? router.replace({ pathname: '/invite', params: { id: sent.id } })
+                  : void invite(c.id, c.nickname, reason)
+              }
+            />
+          </Card>
+        );
+      })}
 
       {error ? (
         <Card title="出错了">
@@ -127,6 +116,12 @@ export default function MatchScreen() {
 
       {result?.note ? <Notice>{result.note}</Notice> : null}
       {result?.usedLLM ? <Notice>排序与撮合依据由大模型生成，只依据履约记录、距离、时间窗等字段。</Notice> : null}
+      {blockedIds.length > 0 ? (
+        <Notice>已拉黑 {blockedIds.length} 人，他们不会出现在撮合结果里。可在履约信用页解除。</Notice>
+      ) : null}
+      <Notice>
+        发出邀请不动链上资金。只有对方也同意之后，双方才各缴一笔押金进托管合约。
+      </Notice>
       <Notice>
         Demo 说明：对方账户由本机模拟（另一个内置钱包），押金与打卡都是 Monad 测试网上的真实交易。
       </Notice>

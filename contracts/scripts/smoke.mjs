@@ -82,4 +82,68 @@ try {
 if (status !== 3 || hostRecords[0].length === 0 || !soulbound) {
   throw new Error('冒烟测试未通过');
 }
-console.log('\n冒烟测试通过：押金已退回、SBT 已铸造且不可转让');
+console.log('闭环通过：押金已退回、SBT 已铸造且不可转让');
+
+// ---- 场景二：单方打卡 -> 举报 -> 仲裁罚没。验证罚没不是全额赔付给对方 ----
+const read = (functionName, args = []) =>
+  publicClient.readContract({ address: escrow, abi: escrowAbi, functionName, args });
+
+const [slashBps, compBps, fundBefore] = await Promise.all([
+  read('SLASH_BPS'),
+  read('COMPENSATION_BPS'),
+  read('safetyFund'),
+]);
+
+const hostCode2 = 'HOST02';
+const guestCode2 = 'GUEST2';
+const now2 = BigInt(Math.floor(Date.now() / 1000));
+await send(host, {
+  address: escrow,
+  abi: escrowAbi,
+  functionName: 'createTeam',
+  args: [0, now2 + 60n, now2 + 3600n, keccak256(stringToHex(hostCode2))],
+  value: deposit,
+});
+const teamId2 = await read('teamCount');
+await send(guest, {
+  address: escrow,
+  abi: escrowAbi,
+  functionName: 'joinTeam',
+  args: [teamId2, keccak256(stringToHex(guestCode2))],
+  value: deposit,
+});
+// 只有 guest 到场打卡，host 没来；guest 举报
+await send(guest, { address: escrow, abi: escrowAbi, functionName: 'checkIn', args: [teamId2, hostCode2] });
+await send(guest, {
+  address: escrow,
+  abi: escrowAbi,
+  functionName: 'raiseDispute',
+  args: [teamId2, '对方未按约定到场'],
+});
+// 仲裁人（部署者）裁定 host 失约、guest 守约
+await send(host, {
+  address: escrow,
+  abi: escrowAbi,
+  functionName: 'resolveDispute',
+  args: [teamId2, false, true],
+});
+
+const slashed = (deposit * slashBps) / 10000n;
+const toKeeper = (slashed * compBps) / 10000n;
+const expectedFundDelta = slashed - toKeeper;
+const fundAfter = await read('safetyFund');
+const team2 = await read('teams', [teamId2]);
+
+console.log(`\n罚没比例 ${Number(slashBps) / 100}%，其中赔付守约方 ${Number(compBps) / 100}%`);
+console.log(`守约方净收益 ${toKeeper} wei（押金 ${deposit} wei 的 ${(Number(toKeeper) * 100) / Number(deposit)}%）`);
+console.log(`安全基金 ${fundBefore} -> ${fundAfter} wei（预期 +${expectedFundDelta}）`);
+console.log(`team2 status=${team2[3]} (5 = Resolved)`);
+
+if (fundAfter - fundBefore !== expectedFundDelta || team2[3] !== 5) {
+  throw new Error('罚没结算不符合预期');
+}
+if (toKeeper >= deposit) {
+  throw new Error('守约方净收益不应达到一整份押金，否则恶意举报有套利空间');
+}
+
+console.log('\n冒烟测试通过：闭环退款 + SBT 不可转让 + 罚没分账进安全基金');

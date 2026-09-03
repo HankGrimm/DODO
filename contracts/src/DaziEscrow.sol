@@ -38,6 +38,17 @@ contract DaziEscrow {
     address public arbiter;
     uint256 public teamCount;
 
+    /// @notice 失约方被罚没的押金比例。刻意不做"全额赔付给对方"——那样举报成功就有净收益，
+    ///         押金机制会退化成新的骚扰工具（PRD 第 3 节痛点③、第 6 节 R3）。
+    uint16 public constant SLASH_BPS = 5000;
+    /// @notice 罚没金额里赔付给守约方的比例，余下进安全基金。
+    ///         守约方的净收益上限因此被压到单方押金的 25%，白跑一趟有补偿但不构成套利动机。
+    uint16 public constant COMPENSATION_BPS = 5000;
+    /// @notice 累积的安全基金。Demo 阶段刻意没有提取函数——这笔钱谁能动、用于安全核验还是误判补偿，
+    ///         对应 PRD 待确认问题 3 与 4，都还没有答案，所以先只累积不支出。
+    uint256 public safetyFund;
+
+
     mapping(uint256 => Team) public teams;
     mapping(address => uint256[]) private _teamsOf;
 
@@ -47,6 +58,7 @@ contract DaziEscrow {
     event TeamCompleted(uint256 indexed teamId);
     event TeamDisputed(uint256 indexed teamId, address indexed raisedBy, string reason);
     event TeamResolved(uint256 indexed teamId, bool hostKept, bool guestKept);
+    event Slashed(uint256 indexed teamId, address indexed breacher, uint256 toKeeper, uint256 toSafetyFund);
     event TeamExpired(uint256 indexed teamId);
     error NotArbiter();
     error NotParticipant();
@@ -154,8 +166,9 @@ contract DaziEscrow {
         _pay(t.host, t.deposit);
         _pay(t.guest, t.deposit);
     }
-    /// @notice 仲裁裁决。失约方的押金赔付给守约方；双方都失约则各自退回。
-    ///         证据标准与申诉路径目前在链下（PRD 待确认问题 4），本函数只落地资金与记录结果。
+    /// @notice 仲裁裁决。失约方押金按 SLASH_BPS 罚没，罚没额一部分赔付守约方、余下进安全基金；
+    ///         双方都失约则各自退回。证据标准与申诉路径目前在链下（PRD 待确认问题 4），
+    ///         本函数只落地资金与记录结果。
     function resolveDispute(uint256 teamId, bool hostKept, bool guestKept) external {
         if (msg.sender != arbiter) revert NotArbiter();
         Team storage t = teams[teamId];
@@ -166,14 +179,22 @@ contract DaziEscrow {
         _mintBoth(t, teamId, hostKept, guestKept);
 
         uint256 d = t.deposit;
-        if (hostKept && !guestKept) {
-            _pay(t.host, d * 2);
-        } else if (!hostKept && guestKept) {
-            _pay(t.guest, d * 2);
-        } else {
+        if (hostKept == guestKept) {
+            // 都守约或都失约：原路退回，不罚没。谁都没有单方受益
             _pay(t.host, d);
             _pay(t.guest, d);
+            return;
         }
+
+        address keeper = hostKept ? t.host : t.guest;
+        address breacher = hostKept ? t.guest : t.host;
+        uint256 slashed = (d * SLASH_BPS) / 10000;
+        uint256 toKeeper = (slashed * COMPENSATION_BPS) / 10000;
+        safetyFund += slashed - toKeeper;
+
+        emit Slashed(teamId, breacher, toKeeper, slashed - toKeeper);
+        _pay(keeper, d + toKeeper);
+        _pay(breacher, d - slashed);
     }
 
     function teamsOf(address who) external view returns (uint256[] memory) {

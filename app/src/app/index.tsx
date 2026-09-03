@@ -8,13 +8,14 @@ import { Spacing } from '@/constants/theme';
 import { SCENES, addressUrl, contractsReady, shortAddress } from '@/lib/chain';
 import { creditScore } from '@/lib/credit';
 import { formatMon } from '@/lib/escrow';
-import { useStore } from '@/lib/store';
+import { inviteLive, useStore } from '@/lib/store';
 
 export default function HomeScreen() {
-  const { ready, profile, address, balance, records, teams, refresh } = useStore();
+  const { ready, profile, address, balance, records, teams, invites, blockedIds, refresh } = useStore();
   const kept = records.filter((r) => r.kept).length;
   const credit = creditScore({ kept, missed: records.length - kept });
   const canStart = Boolean(profile?.verified) && contractsReady && balance > 0n;
+  const pendingInvites = invites.filter((i) => inviteLive(i, blockedIds));
 
   return (
     <Screen>
@@ -72,6 +73,19 @@ export default function HomeScreen() {
         <Button title="发起搭子请求" disabled={!canStart} onPress={() => router.push('/create')} />
         <Button title="我的履约信用与凭证" variant="secondary" onPress={() => router.push('/credit')} />
       </View>
+
+      {pendingInvites.length > 0 && (
+        <Card title="进行中的邀请">
+          {pendingInvites.map((i) => (
+            <Link key={i.id} href={{ pathname: '/invite', params: { id: i.id } }}>
+              <ThemedText type="small">
+                {i.nickname} · {SCENES[i.scene]} · {i.place} ·{' '}
+                {i.status === 'accepted' ? '对方已同意，待缴押金' : '等待对方确认（未上链）'}
+              </ThemedText>
+            </Link>
+          ))}
+        </Card>
+      )}
 
       {teams.length > 0 && (
         <Card title="我的组队">

@@ -28,9 +28,11 @@ const SYSTEM_PROMPT = [
   '只输出 JSON：{"picks":[{"id":"候选人id","reason":"理由"}]}，最多 3 条，按推荐顺序排列。',
 ].join('\n');
 
-/// 硬性约束过滤：未实名一律不可参与匹配（PRD R2），性别偏好不做降级推荐（PRD R8）
-export function applyHardFilters(query: MatchQuery, pool: Candidate[]) {
+/// 硬性约束过滤：已拉黑一律不出现（PRD R3），未实名一律不可参与匹配（PRD R2），
+/// 性别偏好不做降级推荐（PRD R8）
+export function applyHardFilters(query: MatchQuery, pool: Candidate[], blockedIds: string[] = []) {
   return pool.filter((c) => {
+    if (blockedIds.includes(c.id)) return false;
     if (!c.verified) return false;
     if (!c.scenes.includes(query.scene)) return false;
     if (query.genderPref === 'same' && c.gender !== query.myGender) return false;
@@ -66,8 +68,12 @@ function extractJson(text: string) {
 
 export type MatchResult = { ranked: Ranked[]; usedLLM: boolean; note?: string };
 
-export async function matchCandidates(query: MatchQuery, pool: Candidate[]): Promise<MatchResult> {
-  const eligible = applyHardFilters(query, pool);
+export async function matchCandidates(
+  query: MatchQuery,
+  pool: Candidate[],
+  blockedIds: string[] = [],
+): Promise<MatchResult> {
+  const eligible = applyHardFilters(query, pool, blockedIds);
   if (eligible.length === 0) return { ranked: [], usedLLM: false, note: '当前没有符合硬性条件的候选人' };
   if (!BASE_URL || !API_KEY) {
     return { ranked: fallbackRank(eligible), usedLLM: false, note: '未配置大模型，已使用规则排序兜底' };

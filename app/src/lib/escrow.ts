@@ -99,6 +99,18 @@ export async function raiseDispute(teamId: bigint, reason: string) {
   return write('me', { functionName: 'raiseDispute', args: [teamId, reason] });
 }
 
+/// 罚没条款与安全基金余额，都从合约读，不在前端硬编码比例
+export async function readSlashTerms() {
+  const read = (functionName: 'SLASH_BPS' | 'COMPENSATION_BPS' | 'safetyFund') =>
+    publicClient.readContract({ address: ESCROW_ADDRESS, abi: daziescrowAbi, functionName });
+  const [slashBps, compensationBps, safetyFund] = await Promise.all([
+    read('SLASH_BPS') as Promise<number>,
+    read('COMPENSATION_BPS') as Promise<number>,
+    read('safetyFund') as Promise<bigint>,
+  ]);
+  return { slashBps, compensationBps, safetyFund };
+}
+
 export async function readTeam(teamId: bigint): Promise<OnChainTeam> {
   const t = (await publicClient.readContract({
     address: ESCROW_ADDRESS,

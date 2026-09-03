@@ -1,12 +1,12 @@
 import { ThemedText } from '@/components/themed-text';
-import { Card, Notice, Row, Screen } from '@/components/ui-kit';
+import { Button, Card, Notice, Row, Screen } from '@/components/ui-kit';
 import { SBT_ADDRESS, SCENES, addressUrl } from '@/lib/chain';
 import { ExternalLink } from '@/components/external-link';
 import { MIN_RECORDS_FOR_SCORE, creditScore } from '@/lib/credit';
 import { useStore } from '@/lib/store';
 
 export default function CreditScreen() {
-  const { records } = useStore();
+  const { records, blocked, unblockPartner } = useStore();
   const kept = records.filter((r) => r.kept).length;
   const c = creditScore({ kept, missed: records.length - kept });
 
@@ -47,6 +47,26 @@ export default function CreditScreen() {
             <ThemedText type="linkPrimary">在 Monad 浏览器查看凭证合约</ThemedText>
           </ExternalLink>
         ) : null}
+      </Card>
+
+      <Card title={`黑名单（${blocked.length} 人）`}>
+        {blocked.length === 0 ? (
+          <ThemedText type="small" themeColor="textSecondary">
+            还没有拉黑任何人。在组队页可以拉黑对方，之后撮合不会再推荐 TA。
+          </ThemedText>
+        ) : (
+          blocked.map((b) => (
+            <Row
+              key={b.candidateId}
+              label={`${b.nickname} · ${new Date(b.at).toLocaleDateString('zh-CN')}`}
+              value={<Button title="解除" variant="secondary" onPress={() => void unblockPartner(b.candidateId)} />}
+            />
+          ))
+        )}
+        <ThemedText type="small" themeColor="textSecondary">
+          黑名单只存在本机，不上链、不对外公开、不改动对方信用分。把"我不想再遇到这个人"写成链上公开记录，
+          等于给对方挂一个谁都能看见的负面标签，越过了"不做公开评价展示"的边界。
+        </ThemedText>
       </Card>
 
       <Notice>
